@@ -1,0 +1,50 @@
+
+
+namespace App\Models;
+
+use Illuminate\Database\Eloquent\Model;
+
+class DataExtractionTypes extends Model
+{
+    <?php
+
+namespace App\Models;
+
+use Illuminate\Database\Eloquent\Factories\HasFactory;
+use Illuminate\Database\Eloquent\Model;
+
+class DataExtractionTypes extends Model
+{
+    use HasFactory;
+
+    /**
+     * The table associated with the model.
+     *
+     * @var string
+     */
+    protected $table = 'data_extraction_types'; // Make sure this matches your actual table name
+
+    /**
+     * The primary key associated with the table.
+     *
+     * @var string
+     */
+    protected $primaryKey = 'id'; // Change this if your primary key has a different name
+
+    /**
+     * Indicates if the model should be timestamped.
+     *
+     * @var bool
+     */
+    public $timestamps = false; // Set to false if your table doesn't have created_at/updated_at columns
+
+    /**
+     * The attributes that are mass assignable.
+     *
+     * @var array
+     */
+    protected $fillable = [
+        // Add the column names from your table here
+        'name
+}
+}
