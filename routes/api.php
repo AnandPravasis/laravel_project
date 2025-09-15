@@ -9,4 +9,5 @@ Route::get('data-extraction-types/{id}', [DataExtractionTypesController::class, 
 Route::post('get-software', [DataExtractionTypesController::class, 'getSoftware']);
 Route::post('add-bank', [DataExtractionTypesController::class, 'addBank']);
 Route::post('get-bank/{id}', [DataExtractionTypesController::class, 'getBankById']);
+Route::post('upload-file', [DataExtractionTypesController::class, 'uploadCsv']);
 
