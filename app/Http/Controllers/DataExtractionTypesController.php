@@ -131,5 +131,76 @@ class DataExtractionTypesController extends Controller
             ]);
         }
     }
+    public function uploadCsv(Request $request)
+{
+    $request->validate([
+        'csv_file'               => 'required|file|mimes:csv,txt',
+        'data_extraction_type_id'=> 'required|integer',
+        'data_extraction_id'     => 'required|integer',
+    ]);
+
+    // Get DataExtractionTypes record by id
+    $type = DataExtractionTypes::find($request->data_extraction_type_id);
+
+    if (!$type) {
+        return response()->json([
+            'status' => false,
+            'message' => 'Invalid data_extraction_type_id',
+        ], 400);
+    }
+
+    $software = strtolower($type->software);
+
+    // Get filename without extension
+    $csvFile = $request->file('csv_file');
+    $originalName = pathinfo($csvFile->getClientOriginalName(), PATHINFO_FILENAME);
+    $tableName = $software . '_' . strtolower($originalName);
+
+    if (!Schema::hasTable($tableName)) {
+        return response()->json([
+            'status' => false,
+            'message' => "Table '$tableName' does not exist.",
+        ], 400);
+    }
+
+    $handle = fopen($csvFile->getRealPath(), 'r');
+    $header = null;
+    $rows = [];
+    $rowCount = 0;
+
+    while (($data = fgetcsv($handle, 1000, ',')) !== FALSE) {
+        if (!$header) {
+            $header = array_map('trim', $data);
+        } else {
+            $row = array_combine($header, $data);
+            if ($row) {
+                $row['data_extraction_id'] = $request->data_extraction_id;
+                $rows[] = $row;
+                $rowCount++;
+            }
+        }
+    }
+    fclose($handle);
+
+    if ($rowCount === 0) {
+        return response()->json([
+            'status' => false,
+            'message' => 'CSV is empty or has no valid rows.',
+        ], 400);
+    }
+
+    try {
+        DB::table($tableName)->insert($rows);
+        return response()->json([
+            'status' => true,
+            'message' => "Inserted $rowCount records into '$tableName' successfully.",
+        ]);
+    } catch (\Exception $e) {
+        return response()->json([
+            'status' => false,
+            'message' => 'Insert failed: ' . $e->getMessage(),
+        ], 500);
+    }
+}
 
 }

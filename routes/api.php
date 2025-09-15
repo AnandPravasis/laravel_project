@@ -7,5 +7,6 @@ use App\Http\Controllers\DataExtractionTypesController;
 Route::get('data-extraction-types', [DataExtractionTypesController::class, 'index']);
 Route::get('data-extraction-types/{id}', [DataExtractionTypesController::class, 'show']);
 Route::post('get-software', [DataExtractionTypesController::class, 'getSoftware']);
-Route::post('store-extraction', [DataExtractionTypesController::class, 'storeExtraction']);
+Route::post('add-bank', [DataExtractionTypesController::class, 'addBank']);
+Route::post('get-bank/{id}', [DataExtractionTypesController::class, 'getBankById']);
 

@@ -15,4 +15,8 @@ class DataExtraction extends Model
     {
         return $this->hasMany(DataExtractionFileStatus::class, 'data_extraction_id');
     }
+    public function extractionType()
+    {
+        return $this->belongsTo(DataExtractionTypes::class, 'data_extraction_type_id');
+    }
 }
