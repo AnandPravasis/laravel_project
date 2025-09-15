@@ -11,12 +11,8 @@ use App\Models\DataExtractionFileStatus;
 
 class DataExtractionTypesController extends Controller
 {
-     /**
-     * Display a listing of the resource.
-     */
     public function index()
     {
-        // Fetch all records from the data_extraction_types table
         $data = DataExtractionTypes::with('files','extractions.fileStatus')->get();
         
         if(!empty($data)){
@@ -62,7 +58,7 @@ class DataExtractionTypesController extends Controller
             return response()->json($array);die;
         }
     }
-    public function storeExtraction(Request $request)
+    public function AddBank(Request $request)
     {
         $validatedData = $request->validate([
             'bank_name' => 'required|string|max:255',
@@ -99,24 +95,41 @@ class DataExtractionTypesController extends Controller
         ];
         return response()->json($array);die;
     }
-    /**
-     * Display the specified resource.
-     */
-    public function show($id)
+    public function getAllBanks()
     {
-        // Fetch a single record by ID
-        $data = DataExtractionTypes::find($id);
-        
-        if (!$data) {
+        $banks = DataExtraction::with(['fileStatus', 'extractionType'])->get();
+
+        if ($banks->isNotEmpty()) {
             return response()->json([
-                'success' => false,
-                'message' => 'Record not found'
-            ], 404);
+                'status' => true,
+                'message' => 'All banks fetched successfully.',
+                'data' => $banks
+            ]);
+        } else {
+            return response()->json([
+                'status' => false,
+                'message' => 'No banks found.',
+                'data' => []
+            ]);
         }
-        
-        return response()->json([
-            'success' => true,
-            'data' => $data
-        ]);
     }
+    public function getBankById($id)
+    {
+        $bank = DataExtraction::with(['fileStatus', 'extractionType'])->find($id);
+
+        if ($bank) {
+            return response()->json([
+                'status' => true,
+                'message' => 'Bank details retrieved successfully.',
+                'data' => $bank
+            ]);
+        } else {
+            return response()->json([
+                'status' => false,
+                'message' => 'Bank not found.',
+                'data' => []
+            ]);
+        }
+    }
+
 }
