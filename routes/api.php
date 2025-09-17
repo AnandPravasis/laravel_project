@@ -10,4 +10,7 @@ Route::post('get-software', [DataExtractionTypesController::class, 'getSoftware'
 Route::post('add-bank', [DataExtractionTypesController::class, 'addBank']);
 Route::post('get-bank/{id}', [DataExtractionTypesController::class, 'getBankById']);
 Route::post('upload-file', [DataExtractionTypesController::class, 'uploadCsv']);
+Route::post('extract-kyc', [DataExtractionTypesController::class, 'updateRecords']);
+Route::post('update-csv', [DataExtractionTypesController::class, 'updateCsv']);
+Route::post('delete-file', [DataExtractionTypesController::class, 'deleteFileData']);
 
