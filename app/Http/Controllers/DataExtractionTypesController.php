@@ -607,6 +607,129 @@ public function downloadKYC(Request $request)
         'message' => "KYC download not implemented for '$software' yet.",
     ]);
 }
+public function downloadShareOutstandingCsv(Request $request)
+{
+    $request->validate([
+        'data_extraction_id' => 'required|integer',
+        'software'           => 'required|string',
+        'branch_code'        => 'required|string',
+        'scheme_code'        => 'required|string',
+        'class'              => 'required|string',
+    ]);
+
+    $extractionId = $request->input('data_extraction_id');
+    $software = strtolower($request->input('software'));
+    $branchCode = $request->input('branch_code'); 
+    $schemeCode = $request->input('scheme_code'); 
+    $class = $request->input('class');  
+
+    $prefix = $software . '_';
+    $memberTable = $prefix . 'member';
+    $shareTable = $prefix . 'share';
+    $repayTable = $prefix . 'share_repay';
+
+    if (!Schema::hasTable($memberTable) || !Schema::hasTable($shareTable) || !Schema::hasTable($repayTable)) {
+        return response()->json([
+            'status' => false,
+            'message' => 'Required tables are missing.',
+        ], 400);
+    }
+
+    $members = DB::table($memberTable)
+        ->where('data_extraction_id', $extractionId)
+        ->where('class', $class)
+        ->get();
+
+    $kycMap = $members->pluck('mis_kyc_number', 'member_no')->toArray();
+    $nameMap = $members->pluck('name', 'member_no')->toArray();
+    $dateMap = $members->pluck('adm_date', 'member_no')->toArray();
+
+    // Load shares
+    $shares = DB::table($shareTable)
+        ->where('data_extraction_id', $extractionId)
+        ->where('class', $class)
+        ->select('member_no', DB::raw('SUM(amount) as total_amount'), DB::raw('SUM(no_of_share) as total_shares'))
+        ->groupBy('member_no')
+        ->get()
+        ->keyBy('member_no');
+
+    // Load share repayments
+    $repayments = DB::table($repayTable)
+        ->where('data_extraction_id', $extractionId)
+        ->where('class', $class)
+        ->select('member_no', DB::raw('SUM(amount) as total_amount'), DB::raw('SUM(no_of_share) as total_shares'))
+        ->groupBy('member_no')
+        ->get()
+        ->keyBy('member_no');
+
+    $csvHeader = [
+        'Cost Center', 'Branch', 'Branch Code', 'Scheme Code', 'KYC. NO.',
+        'Bill No /M#', 'Op Date', 'AMOUNT', 'Maturity Date', 'Blank',
+        'Allow Zero Bal', 'SHARE HOLDER NAME', 'NO.OF SHARES', 'Applicant Type',
+        'Reservation Type', 'Ward for election'
+    ];
+
+    $csvRows = [];
+    $csvRows[] = $csvHeader;
+
+    foreach ($members as $member) {
+        $memberNo = $member->member_no;
+
+        // Compute bill number
+        $memberNoFormatted = $memberNo >= 0
+            ? str_pad($memberNo, 6, '0', STR_PAD_LEFT)
+            : str_pad($memberNo, 6, '9', STR_PAD_LEFT);
+
+        $billNo = $branchCode . $schemeCode . $memberNoFormatted;
+
+        // Get amounts
+        $credit = isset($shares[$memberNo]) ? $shares[$memberNo]->total_amount : 0;
+        $debit = isset($repayments[$memberNo]) ? $repayments[$memberNo]->total_amount : 0;
+        $amount = $credit - $debit;
+
+        // Get shares
+        $shareQtyCredit = isset($shares[$memberNo]) ? $shares[$memberNo]->total_shares : 0;
+        $shareQtyDebit = isset($repayments[$memberNo]) ? $repayments[$memberNo]->total_shares : 0;
+        $netShares = $shareQtyCredit - $shareQtyDebit;
+
+        if ($amount == 0 && $netShares == 0) {
+            continue; // Skip accounts with 0 shares and 0 balance
+        }
+
+        $csvRows[] = [
+            '', // Cost Center
+            '', // Branch
+            $branchCode,
+            $schemeCode,
+            $member->mis_kyc_number,
+            $billNo,
+            $member->adm_date,
+            number_format($amount, 2, '.', ''),
+            '', '', '', // Maturity Date, Blank, Allow Zero Bal
+            $member->name,
+            $netShares,
+            '', '', '', // Applicant Type, Reservation Type, Ward for election
+        ];
+    }
+
+    if (count($csvRows) === 1) {
+        return response()->json([
+            'status' => false,
+            'message' => 'No share outstanding data found for export.',
+        ]);
+    }
+
+    $filename = 'share_outstanding_' . now()->format('Ymd_His') . '.csv';
+    $filepath = storage_path("app/public/$filename");
+
+    $handle = fopen($filepath, 'w');
+    foreach ($csvRows as $row) {
+        fputcsv($handle, $row);
+    }
+    fclose($handle);
+
+    return response()->download($filepath);
+}
 
 
 }
