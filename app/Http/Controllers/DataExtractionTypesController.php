@@ -429,5 +429,184 @@ public function deleteFileData(Request $request)
         ], 500);
     }
 }
+public function downloadSiliconKYC(Request $request)
+{
+    $request->validate([
+        'data_extraction_id' => 'required|integer',
+    ]);
+
+    $extractionId = $request->input('data_extraction_id');
+    $software = 'silicon';
+    $prefix = $software . '_';
+
+    $header = [
+        'Mobile', 'First Name', 'SurName', 'Parent/Guardian', 'Guardian Type',
+        'Gender', 'Marital Status', 'DOB', 'Unique Identification Number (UID)/Aadhar',
+        'House/Building Number', 'House Name', 'Area / Location', 'Village Town',
+        'PIN', 'Tel. (Res.) / Alternate Mobile', 'Tel. (off) (XXXX-XXXXXX)',
+        'Fax', 'Email', 'Net Worth', 'KYC Number', 'KYC SCCID', 'Status'
+    ];
+
+    $kycMap = [];
+
+    $memberTable = $prefix . 'member';
+    if (!Schema::hasTable($memberTable)) {
+        return response()->json([
+            'status' => false,
+            'message' => "Member table not found.",
+        ]);
+    }
+
+    $memberRows = DB::table($memberTable)
+        ->where('data_extraction_id', $extractionId)
+        ->whereNotNull('mis_kyc_number')
+        ->get();
+
+    foreach ($memberRows as $row) {
+        $row = (array) $row;
+
+        $kycMap[$row['mis_kyc_number']] = [
+            'Mobile'       => $row['phone'] ?? '',
+            'First Name'   => $row['name'] ?? '',
+            'SurName'      => '',
+            'Parent/Guardian' => $row['father_name'] ?? '',
+            'Guardian Type'   => 'C/o',
+            'Gender'       => $row['sex'] ?? '',
+            'Marital Status' => '',
+            'DOB'          => $row['dob'] ?? '',
+            'UID'          => '',
+            'House/Building Number' => $row['house_no'] ?? '',
+            'House Name'   => $row['present_add1'] ?? '',
+            'Area / Location' => $row['present_add2'] ?? '',
+            'Village Town' => $row['present_add3'] ?? '',
+            'PIN'          => '',
+            'Tel. Res'     => '',
+            'Tel. Off'     => '',
+            'Fax'          => '',
+            'Email'        => $row['e_mail_id'] ?? '',
+            'Net Worth'    => '',
+            'KYC Number'   => $row['mis_kyc_number'],
+            'KYC SCCID'    => '',
+            'Status'       => ''
+        ];
+    }
+
+    // Load other tables with mis_kyc_number (excluding member table)
+    $tables = DB::select("SHOW TABLES LIKE '{$prefix}%'");
+
+$otherTables = collect($tables)
+    ->map(function ($table) {
+        return array_values((array)$table)[0]; // Get table name string
+    })
+    ->filter(function ($table) use ($memberTable) {
+        return $table !== $memberTable && Schema::hasColumn($table, 'mis_kyc_number');
+    })
+    ->values()
+    ->toArray();
+
+
+    $fieldMapping = [
+        'Mobile'               => ['phone', 'phone_no'],
+        'First Name'           => ['name'],
+        'Parent/Guardian'      => ['father_name'],
+        'Gender'               => ['sex'],
+        'DOB'                  => ['dob'],
+        'House/Building Number'=> ['house_no'],
+        'House Name'           => ['add1'],
+        'Area / Location'      => ['add2'],
+        'Village Town'         => ['add3'],
+        'Email'                => ['e_mail_id'],
+    ];
+
+    foreach ($otherTables as $table) {
+        $rows = DB::table($table)
+            ->where('data_extraction_id', $extractionId)
+            ->whereNotNull('mis_kyc_number')
+            ->get();
+
+        foreach ($rows as $row) {
+            $row = (array) $row;
+            $kycNum = $row['mis_kyc_number'];
+
+            if (!isset($kycMap[$kycNum])) {
+                continue; // skip KYC numbers not in member table
+            }
+
+            foreach ($fieldMapping as $csvKey => $possibleDbFields) {
+                if (!empty($kycMap[$kycNum][$csvKey])) {
+                    continue; // already set from member
+                }
+                foreach ($possibleDbFields as $field) {
+                    if (!empty($row[$field])) {
+                        $kycMap[$kycNum][$csvKey] = $row[$field];
+                        break;
+                    }
+                }
+            }
+        }
+    }
+
+    // Convert to CSV
+    $csvRows = [];
+    $csvRows[] = $header;
+
+    foreach ($kycMap as $record) {
+        $csvRows[] = [
+            $record['Mobile'],
+            $record['First Name'],
+            $record['SurName'],
+            $record['Parent/Guardian'],
+            $record['Guardian Type'],
+            $record['Gender'],
+            $record['Marital Status'],
+            $record['DOB'],
+            $record['UID'],
+            $record['House/Building Number'],
+            $record['House Name'],
+            $record['Area / Location'],
+            $record['Village Town'],
+            $record['PIN'],
+            $record['Tel. Res'],
+            $record['Tel. Off'],
+            $record['Fax'],
+            $record['Email'],
+            $record['Net Worth'],
+            $record['KYC Number'],
+            $record['KYC SCCID'],
+            $record['Status'],
+        ];
+    }
+
+    $filename = 'silicon_kyc_data_' . now()->format('Ymd_His') . '.csv';
+    $filepath = storage_path("app/public/$filename");
+
+    $handle = fopen($filepath, 'w');
+    foreach ($csvRows as $row) {
+        fputcsv($handle, $row);
+    }
+    fclose($handle);
+
+    return response()->download($filepath);
+}
+public function downloadKYC(Request $request)
+{
+    $request->validate([
+        'data_extraction_id' => 'required|integer',
+        'software' => 'required|string',
+    ]);
+
+    $software = strtolower($request->input('software'));
+
+    if ($software === 'silicon') {
+        return $this->downloadSiliconKYC($request); // Call existing silicon logic
+    }
+
+    // else fallback to another general logic (or return unsupported for now)
+    return response()->json([
+        'status' => false,
+        'message' => "KYC download not implemented for '$software' yet.",
+    ]);
+}
+
 
 }

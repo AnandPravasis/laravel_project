@@ -13,4 +13,4 @@ Route::post('upload-file', [DataExtractionTypesController::class, 'uploadCsv']);
 Route::post('extract-kyc', [DataExtractionTypesController::class, 'updateRecords']);
 Route::post('update-csv', [DataExtractionTypesController::class, 'updateCsv']);
 Route::post('delete-file', [DataExtractionTypesController::class, 'deleteFileData']);
-
+Route::post('/download/kyc', [DataExtractionTypesController::class, 'downloadKYC']);
