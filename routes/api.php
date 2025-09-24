@@ -15,4 +15,10 @@ Route::post('update-csv', [DataExtractionTypesController::class, 'updateCsv']);
 Route::post('delete-file', [DataExtractionTypesController::class, 'deleteFileData']);
 Route::post('/download/kyc', [DataExtractionTypesController::class, 'downloadKYC']);
 Route::post('/download/share-outstanding', [DataExtractionTypesController::class, 'downloadShareOutstandingCsv']);
-Route::post('daily-download', [DataExtractionTypesController::class, 'downloadDepositOutstandingCsv']);
+Route::post('loan-outstanding', [DataExtractionTypesController::class, 'downloadLoanOutstandingCsv']);
+Route::post('savings-outstanding', [DataExtractionTypesController::class, 'downloadSavingsOutstandingCsv']);
+Route::post('daily-outstanding', [DataExtractionTypesController::class, 'downloadDepositOutstandingCsv']);
+Route::post('fd-outstanding', [DataExtractionTypesController::class, 'downloadFdOutstandingCsv']);
+
+
+
