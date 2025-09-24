@@ -1413,7 +1413,12 @@ public function downloadGroupDepositOutstandingCsv(Request $request)
     }
     fclose($handle);
 
-    return response()->download($filepath);
+    return response()->json([
+            'status' => true,
+            'file_url' => asset("storage/" . $filename),
+            'file_name' => $filename,
+            'message' => 'GD outstanding exported successfully',
+        ]);
 }
 
 
