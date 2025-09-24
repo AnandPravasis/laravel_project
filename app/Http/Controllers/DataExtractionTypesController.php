@@ -730,6 +730,306 @@ public function downloadShareOutstandingCsv(Request $request)
 
     return response()->download($filepath);
 }
+public function downloadDepositOutstandingCsv(Request $request)
+{
+    $request->validate([
+        'data_extraction_id' => 'required|integer',
+        'software'           => 'required|string',
+        'branch_code'        => 'required|string',
+        'scheme_code'        => 'required|string',
+        'agent_code'         => 'required|string',
+    ]);
+
+    $extractionId = $request->input('data_extraction_id');
+    $software = strtolower($request->input('software'));
+    $branchCode = $request->input('branch_code');
+    $schemeCode = $request->input('scheme_code');
+    $agentCode = $request->input('agent_code');
+
+    $prefix = $software . '_';
+    $openingTable = $prefix . 'dd_opening';
+    $transactionTable = $prefix . 'dd_trn';
+
+    // Check if required tables exist
+    if (!Schema::hasTable($openingTable) || !Schema::hasTable($transactionTable)) {
+        return response()->json([
+            'status' => false,
+            'message' => 'Required tables are missing.',
+        ], 400);
+    }
+
+    // Load opening data
+    $openings = DB::table($openingTable)
+        ->where('data_extraction_id', $extractionId)
+        ->where('agent_code', $agentCode)
+        ->where('closed', 'N') // Only open accounts
+        ->get();
+
+    // Customer data mappings: KYC, Name, Maturity Date, Interest Rate, etc.
+    $kycMap = $openings->pluck('mis_kyc_number', 'ac_no')->toArray();
+    $nameMap = $openings->pluck('name', 'ac_no')->toArray();
+    $maturityDateMap = $openings->pluck('maturity_date', 'ac_no')->toArray();
+    $interestRateMap = $openings->pluck('int_rate', 'ac_no')->toArray();
+    $trnDateMap = $openings->pluck('trn_date', 'ac_no')->toArray(); // Assuming 'trn_date' is available in dd_opening table
+
+    // Load transaction data to calculate balance (sum of amounts)
+    $transactions = DB::table($transactionTable)
+    ->where('data_extraction_id', $extractionId)
+    ->where('agent_code', $agentCode)
+    ->select('ac_no', DB::raw('SUM(amount) as total_amount'))
+    ->groupBy('ac_no')
+    ->get()
+    ->keyBy('ac_no');
+
+    // CSV headers
+    $csvHeader = [
+         'Cost Center', 'Branch', 'Scheme Code', 'KYC Number', 'Bill No', 'Op Date', 'Balance',
+        'Maturity Date', 'Interest Rate', 'Allow Zero', 'Customer Name', 'Last Interest Paid Date'
+    ];
+
+    // Prepare CSV rows
+    $csvRows = [];
+    $csvRows[] = $csvHeader;
+
+
+    // Iterate through opening accounts and generate CSV rows
+    foreach ($openings as $opening) {
+        $accountNo = $opening->account_no;
+
+        $accountNoFormatted = $accountNo >= 0
+    ? str_pad($accountNo, 6, '0', STR_PAD_LEFT)
+    : str_pad($accountNo, 6, '9', STR_PAD_LEFT);
+
+    $billNo = $branchCode . $schemeCode . $accountNoFormatted;
+
+        // Get balance (sum of all transaction amounts for this account)
+        $balance = isset($transactions[$accountNo]) ? $transactions[$accountNo]->total_amount : 0;
+
+        // Check the KYC number, name, and maturity date
+        $kycNumber = $kycMap[$accountNo] ?? '';
+        $customerName = $nameMap[$accountNo] ?? '';
+        $maturityDate = $maturityDateMap[$accountNo] ?? '';
+        $interestRate = $interestRateMap[$accountNo] ?? '';
+
+        // Allow Zero balance - leave it blank as per the requirement
+        $allowZero = '';
+
+        // Last Interest Paid Date - Placeholder or logic for calculating last interest paid
+        $lastInterestPaidDate = ''; // Add logic here if needed
+
+        // Opening date from 'trn_date' in dd_opening table
+        $opDate = $trnDateMap[$accountNo] ?? '';
+
+        // Skip account with zero balance if needed
+        if ($balance == 0) {
+            continue;
+        }
+
+        // Prepare row for the CSV file
+        $csvRows[] = [
+            '', // Cost Center (Blank)
+            '', // Branch (Blank)
+            $schemeCode,
+            $kycNumber,
+            $billNo,
+            $opDate, // Assuming 'trn_date' corresponds to opening date
+            number_format($balance, 2, '.', ''),
+            $maturityDate,
+            $interestRate,
+            $allowZero,
+            $customerName,
+            $lastInterestPaidDate
+        ];
+    }
+
+    // If no data found, return an error message
+    if (count($csvRows) === 1) {
+        return response()->json([
+            'status' => false,
+            'message' => 'No deposit outstanding data found for export.',
+        ]);
+    }
+
+    // Generate file and prepare for download
+    $filename = 'deposit_outstanding_' . now()->format('Ymd_His') . '.csv';
+    $filepath = storage_path("app/public/$filename");
+
+    // Write CSV to file
+    $handle = fopen($filepath, 'w');
+    foreach ($csvRows as $row) {
+        fputcsv($handle, $row);
+    }
+    fclose($handle);
+
+    return response()->download($filepath);
+}
+
+public function downloadLoanOutstandingCsv(Request $request)
+{
+    $request->validate([
+        'data_extraction_id' => 'required|integer',
+        'software'           => 'required|string',
+        'branch_code'        => 'required|string',
+        'scheme_code'        => 'required|string',
+        'loan_code'          => 'required|string',
+    ]);
+
+    $extractionId = $request->input('data_extraction_id');
+    $software = strtolower($request->input('software'));
+    $branchCode = $request->input('branch_code');
+    $schemeCode = $request->input('scheme_code');
+    $loanCode = $request->input('loan_code');
+
+    $prefix = $software . '_';
+
+    $memberTable = $prefix . 'member';
+    $loanMembersTable = $prefix . 'loan_members';
+    $loanPaymentTable = $prefix . 'loan_payment';
+    $loanRepaymentTable = $prefix . 'loan_repayment';
+
+    if (
+        !Schema::hasTable($memberTable) ||
+        !Schema::hasTable($loanMembersTable) ||
+        !Schema::hasTable($loanPaymentTable) ||
+        !Schema::hasTable($loanRepaymentTable)
+    ) {
+        return response()->json([
+            'status' => false,
+            'message' => 'Required tables are missing.',
+        ], 400);
+    }
+
+    // Get all loan accounts for this loan_code and extraction
+    $loanAccounts = DB::table($loanMembersTable)
+        ->where('data_extraction_id', $extractionId)
+        ->where('loan_code', $loanCode)
+        ->get();
+
+    if ($loanAccounts->isEmpty()) {
+        return response()->json([
+            'status' => false,
+            'message' => 'No loan accounts found.',
+        ]);
+    }
+
+    // Get composite keys for members: (member_no, class)
+    $memberKeys = $loanAccounts->map(function ($loan) {
+        return $loan->member_no . '__' . $loan->class;
+    })->toArray();
+
+    // Load members using composite keys
+    $members = DB::table($memberTable)
+        ->where('data_extraction_id', $extractionId)
+        ->whereIn(DB::raw("CONCAT(member_no, '__', class)"), $memberKeys)
+        ->get()
+        ->keyBy(function ($item) {
+            return $item->member_no . '__' . $item->class;
+        });
+
+    // Get loan numbers
+    $loanNos = $loanAccounts->pluck('loan_no')->toArray();
+
+    // Loan payment details
+    $loanPayments = DB::table($loanPaymentTable)
+        ->where('data_extraction_id', $extractionId)
+        ->where('loan_code', $loanCode)
+        ->where('closed', 'N')
+        ->whereIn('loan_no', $loanNos)
+        ->get()
+        ->keyBy('loan_no');
+
+    // Loan repayments (grouped)
+    $repayments = DB::table($loanRepaymentTable)
+        ->where('data_extraction_id', $extractionId)
+        ->where('loan_code', $loanCode)
+        ->whereIn('loan_no', $loanNos)
+        ->select('loan_no', DB::raw('SUM(principal) as total_principal'), DB::raw('MAX(interest_upto) as last_interest_paid'))
+        ->groupBy('loan_no')
+        ->get()
+        ->keyBy('loan_no');
+
+    $csvHeader = [
+        'scheme code',
+        'branch',
+        'kyc no',
+        'loan no',
+        'opening date',
+        'loan amount',
+        'balance',
+        'due date',
+        'interest rate',
+        'name',
+        'last interest paid date',
+        'total_installments',
+    ];
+
+    $csvRows = [];
+    $csvRows[] = $csvHeader;
+
+    foreach ($loanAccounts as $loan) {
+        $loanNo = $loan->loan_no;
+        $memberNo = $loan->member_no;
+        $class = $loan->class;
+
+        $memberKey = $memberNo . '__' . $class;
+
+        $member = $members[$memberKey] ?? null;
+        $loanPayment = $loanPayments[$loanNo] ?? null;
+
+        if (!$member || !$loanPayment) {
+            continue;
+        }
+
+        $totalPrincipalPaid = $repayments[$loanNo]->total_principal ?? 0;
+        $lastInterestDate = $repayments[$loanNo]->last_interest_paid ?? '';
+
+        $loanAmount = $loanPayment->amount;
+        $balance = $loanAmount - $totalPrincipalPaid;
+
+        if ($balance <= 0) {
+            continue; // Skip fully paid
+        }
+
+        $loanNoFormatted = $loanNo >= 0
+            ? str_pad($loanNo, 6, '0', STR_PAD_LEFT)
+            : str_pad($loanNo, 6, '9', STR_PAD_LEFT);
+
+        $billNo = $branchCode . $schemeCode . $loanNoFormatted;
+
+        $csvRows[] = [
+            $schemeCode,
+            '', // branch
+            $member->mis_kyc_number,
+            $billNo,
+            $loanPayment->repay_start_date,
+            number_format($loanAmount, 2, '.', ''),
+            number_format($balance, 2, '.', ''),
+            $loanPayment->due_date,
+            $loanPayment->int_rate,
+            $member->name,
+            $lastInterestDate,
+            '', // total_installments
+        ];
+    }
+
+    if (count($csvRows) === 1) {
+        return response()->json([
+            'status' => false,
+            'message' => 'No loan outstanding data found for export.',
+        ]);
+    }
+
+    $filename = 'loan_outstanding_' . now()->format('Ymd_His') . '.csv';
+    $filepath = storage_path("app/public/$filename");
+
+    $handle = fopen($filepath, 'w');
+    foreach ($csvRows as $row) {
+        fputcsv($handle, $row);
+    }
+    fclose($handle);
+
+    return response()->download($filepath);
+}
 
 
 }
