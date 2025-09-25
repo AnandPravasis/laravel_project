@@ -23,3 +23,4 @@ Route::post('gd-outstanding', [DataExtractionTypesController::class, 'downloadGr
 Route::post('gold-outstanding', [DataExtractionTypesController::class, 'downloadGoldOutstandingCsv']);
 Route::post('ornament-details', [DataExtractionTypesController::class, 'downloadGoldLoanJewelDetailsCsv']);
 Route::post('gd-loan-outstanding', [DataExtractionTypesController::class, 'downloadGdLoanOutstandingCsv']);
+Route::post('deposit-loan-outstanding', [DataExtractionTypesController::class, 'downloadDepositLoanOutstandingCsv']);

@@ -1098,6 +1098,16 @@ public function downloadSavingsOutstandingCsv(Request $request)
     $lastInterestDate = now()->month > 3
         ? now()->copy()->startOfYear()->subDay()->format('d-m-Y')   // 31-03 of current year
         : now()->copy()->subYear()->endOfMonth()->format('d-m-Y'); // 31-03 of last year
+            // $lastInterestDateRaw = DB::table($interestRateTable)
+            //     ->where('data_extraction_id', $extractionId)
+            //     ->value('int_upto');
+
+            // if ($lastInterestDateRaw) {
+            //     $dateObj = new \DateTime($lastInterestDateRaw);
+            //     $lastInterestDate = $dateObj->format('d-m-Y');
+            // } else {
+            //     $lastInterestDate = '';
+            // }
 
     foreach ($kycMap as $ac_no => $kycNo) {
         $balance = $balanceMap[$ac_no] ?? 0;
@@ -1496,6 +1506,7 @@ public function downloadGoldOutstandingCsv(Request $request)
         'int calc date',
         'ornament count',
         'total weight',
+        'interest rate',
         'name',
     ];
 
@@ -1536,6 +1547,7 @@ public function downloadGoldOutstandingCsv(Request $request)
             $lastInterestDate,
             $jewelCount,
             number_format($payment->net_wt, 2, '.', ''),
+            $payment->int_rate,
             $member->name,
         ];
     }
@@ -1815,6 +1827,205 @@ public function downloadGdLoanOutstandingCsv(Request $request)
             'file_name' => $filename,
             'message' => 'Gold loan outstanding exported successfully',
         ]);
+}
+public function downloadDepositLoanOutstandingCsv(Request $request)
+{
+    $request->validate([
+        'data_extraction_id' => 'required|integer',
+        'software'           => 'required|string',
+        'branch_code'        => 'required|string',
+        'scheme_code'        => 'required|string',
+    ]);
+
+    $extractionId = $request->input('data_extraction_id');
+    $software     = strtolower($request->input('software'));
+    $branchCode   = $request->input('branch_code');
+    $schemeCode   = $request->input('scheme_code');
+
+    $prefix = $software . '_';
+
+    $dlSchemeMasterTable = $prefix . 'dl_scheme_master';
+    $fdHdTable           = $prefix . 'fd_hd';
+    $ddOpeningTable      = $prefix . 'dd_opening';
+    $dlSecurityTable     = $prefix . 'dl_security';
+    $dlOpeningTable      = $prefix . 'dl_opening';
+    $dlRepayTable        = $prefix . 'dl_repay';
+
+    $requiredTables = [
+        $dlSchemeMasterTable,
+        $fdHdTable,
+        $ddOpeningTable,
+        $dlSecurityTable,
+        $dlOpeningTable,
+        $dlRepayTable,
+    ];
+
+    foreach ($requiredTables as $table) {
+        if (!Schema::hasTable($table)) {
+            return response()->json([
+                'status' => false,
+                'message' => "Required table missing: $table",
+            ], 400);
+        }
+    }
+
+    // Get all dl_security loan entries for this extraction id
+    $loanEntries = DB::table($dlSecurityTable)
+        ->where('data_extraction_id', $extractionId)
+        ->get();
+
+    if ($loanEntries->isEmpty()) {
+        return response()->json([
+            'status' => false,
+            'message' => 'No deposit loan entries found.',
+        ]);
+    }
+
+    $loanNos = $loanEntries->pluck('loan_no')->toArray();
+
+    // Fetch loan opening info (due_date, int_rate, closed)
+    $loanOpenings = DB::table($dlOpeningTable)
+        ->where('data_extraction_id', $extractionId)
+        ->whereIn('loan_no', $loanNos)
+        ->where('closed', 'N')
+        ->get()
+        ->keyBy('loan_no');
+
+    if ($loanOpenings->isEmpty()) {
+        return response()->json([
+            'status' => false,
+            'message' => 'No active loan openings found.',
+        ]);
+    }
+
+    // Get repayments sum(principal), max(int_upto) grouped by loan_no
+    $repayments = DB::table($dlRepayTable)
+        ->where('data_extraction_id', $extractionId)
+        ->whereIn('loan_no', $loanNos)
+        ->select('loan_no', DB::raw('SUM(principal) as total_principal'), DB::raw('MAX(int_upto) as last_interest_paid'))
+        ->groupBy('loan_no')
+        ->get()
+        ->keyBy('loan_no');
+
+    // Compose composite keys for deposit accounts (agent_code + account_no)
+    $accountKeys = $loanEntries->map(function($loan) {
+        return ($loan->dep_agent_code ?: 'NULL') . '__' . $loan->dep_ac_no;
+    })->unique()->toArray();
+
+    // Fetch fd_hd keyed by agent_code__fd_no
+    $fdRecords = DB::table($fdHdTable)
+        ->where('data_extraction_id', $extractionId)
+        ->whereIn(DB::raw("CONCAT(agent_code, '__', fd_no)"), $accountKeys)
+        ->get()
+        ->keyBy(function($item) {
+            return ($item->agent_code ?: 'NULL') . '__' . $item->fd_no;
+        });
+
+    // Fetch dd_opening keyed by agent_code__ac_no
+    $ddRecords = DB::table($ddOpeningTable)
+        ->where('data_extraction_id', $extractionId)
+        ->whereIn(DB::raw("CONCAT(agent_code, '__', ac_no)"), $accountKeys)
+        ->get()
+        ->keyBy(function($item) {
+            return ($item->agent_code ?: 'NULL') . '__' . $item->ac_no;
+        });
+
+    $csvHeader = [
+        'scheme code',
+        'branch',
+        'kyc number',
+        'loan number',
+        'opened date',
+        'loan amount',
+        'loan balance',
+        'due date',
+        'interest rate',
+        'name',
+        'last interest paid date',
+        'total installments',
+    ];
+
+    $csvRows = [];
+    $csvRows[] = $csvHeader;
+
+    foreach ($loanEntries as $loan) {
+        $loanNo = $loan->loan_no;
+
+        // Must have an active loan opening
+        if (!isset($loanOpenings[$loanNo])) {
+            continue;
+        }
+        $opening = $loanOpenings[$loanNo];
+
+        $repay = $repayments[$loanNo] ?? null;
+
+        $totalPrincipalPaid = $repay->total_principal ?? 0;
+        $lastInterestPaid = $repay->last_interest_paid ?? '';
+
+        $balance = $loan->loan_amount - $totalPrincipalPaid;
+
+        if ($balance <= 0) {
+            continue; // Skip fully repaid loans
+        }
+
+        $agentCode = $loan->dep_agent_code ?: 'NULL';
+        $accountKey = $agentCode . '__' . $loan->dep_ac_no;
+
+        if (!empty($loan->dep_agent_code)) {
+            $ddRecord = $ddRecords[$accountKey] ?? null;
+            $kycNumber = $ddRecord->mis_kyc_number ?? '';
+            $name = $ddRecord->name ?? '';
+        } else {
+            $fdRecord = $fdRecords[$accountKey] ?? null;
+            $kycNumber = $fdRecord->mis_kyc_number ?? '';
+            $name = $fdRecord->name ?? '';
+        }
+
+        // Generate loan number bill_no = branch_code + scheme_code + loan_no formatted
+        $loanNoFormatted = $loanNo >= 0
+            ? str_pad($loanNo, 6, '0', STR_PAD_LEFT)
+            : str_pad($loanNo, 6, '9', STR_PAD_LEFT);
+
+        $billNo = $branchCode . $schemeCode . $loanNoFormatted;
+
+        $csvRows[] = [
+            $schemeCode,
+            $branchCode,
+            $kycNumber,
+            $billNo,
+            $loan->loan_date,
+            number_format($loan->loan_amount, 2, '.', ''),
+            number_format($balance, 2, '.', ''),
+            $opening->due_date,
+            $opening->int_rate,
+            $name,
+            $lastInterestPaid,
+            '', // total_installments blank
+        ];
+    }
+
+    if (count($csvRows) === 1) {
+        return response()->json([
+            'status' => false,
+            'message' => 'No deposit loan outstanding data found for export.',
+        ]);
+    }
+
+    $filename = 'deposit_loan_outstanding_' . now()->format('Ymd_His') . '.csv';
+    $filepath = storage_path("app/public/$filename");
+
+    $handle = fopen($filepath, 'w');
+    foreach ($csvRows as $row) {
+        fputcsv($handle, $row);
+    }
+    fclose($handle);
+
+    return response()->json([
+        'status' => true,
+        'file_url' => asset("storage/" . $filename),
+        'file_name' => $filename,
+        'message' => 'Deposit loan outstanding exported successfully',
+    ]);
 }
 
 

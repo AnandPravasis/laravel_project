@@ -9,3 +9,7 @@ Route::get('/', function () {
 Route::get('/debug-test', function () {
     return response()->json(['message' => 'Web route working!']);
 });
+Route::get('/phpinfo', function () {
+    phpinfo();
+});
+
