@@ -19,6 +19,7 @@ Route::post('loan-outstanding', [DataExtractionTypesController::class, 'download
 Route::post('savings-outstanding', [DataExtractionTypesController::class, 'downloadSavingsOutstandingCsv']);
 Route::post('daily-outstanding', [DataExtractionTypesController::class, 'downloadDepositOutstandingCsv']);
 Route::post('fd-outstanding', [DataExtractionTypesController::class, 'downloadFdOutstandingCsv']);
-
-
-
+Route::post('gd-outstanding', [DataExtractionTypesController::class, 'downloadGroupDepositOutstandingCsv']);
+Route::post('gold-outstanding', [DataExtractionTypesController::class, 'downloadGoldOutstandingCsv']);
+Route::post('ornament-details', [DataExtractionTypesController::class, 'downloadGoldLoanJewelDetailsCsv']);
+Route::post('gd-loan-outstanding', [DataExtractionTypesController::class, 'downloadGdLoanOutstandingCsv']);

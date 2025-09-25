@@ -1316,7 +1316,6 @@ public function downloadGroupDepositOutstandingCsv(Request $request)
     $branchCode   = $request->input('branch_code');
     $schemeCode   = $request->input('scheme_code');
     $groupCode    = $request->input('group_code');
-
     $prefix = $software . '_';
     $acMasterTable = $prefix . 'group_deposit_ac_master';
     $trnTable      = $prefix . 'group_deposit_trn_dt';
@@ -1356,7 +1355,6 @@ public function downloadGroupDepositOutstandingCsv(Request $request)
         ->select('ac_no', DB::raw('SUM(amount) as total_amount'))
         ->groupBy('ac_no')
         ->get();
-
     $amountMap = [];
     foreach ($transactions as $trn) {
         $amountMap[$trn->ac_no] = $trn->total_amount ?? 0;
@@ -1375,9 +1373,9 @@ public function downloadGroupDepositOutstandingCsv(Request $request)
     foreach ($acNos as $ac_no) {
         $balance = $amountMap[$ac_no] ?? 0;
 
-        if ($balance == 0) {
-            continue;
-        }
+        // if ($balance == 0) {
+        //     continue;
+        // }
 
         // Format gds number
         $memberNoFormatted = $ac_no >= 0
@@ -1418,6 +1416,404 @@ public function downloadGroupDepositOutstandingCsv(Request $request)
             'file_url' => asset("storage/" . $filename),
             'file_name' => $filename,
             'message' => 'GD outstanding exported successfully',
+        ]);
+}
+public function downloadGoldOutstandingCsv(Request $request)
+{
+    $request->validate([
+        'data_extraction_id' => 'required|integer',
+        'software'           => 'required|string',
+        'branch_code'        => 'required|string',
+        'scheme_code'        => 'required|string',
+    ]);
+
+    $extractionId = $request->input('data_extraction_id');
+    $software = strtolower($request->input('software'));
+    $branchCode = $request->input('branch_code');
+    $schemeCode = $request->input('scheme_code');
+
+    $prefix = $software . '_';
+
+    $memberTable       = $prefix . 'member';
+    $jlPaymentTable    = $prefix . 'jl_payment';
+    $jlRepaymentTable  = $prefix . 'jl_repayment';
+    $jewelDetailTable  = $prefix . 'jewel_detail';
+
+    if (
+        !Schema::hasTable($memberTable) ||
+        !Schema::hasTable($jlPaymentTable) ||
+        !Schema::hasTable($jlRepaymentTable) ||
+        !Schema::hasTable($jewelDetailTable)
+    ) {
+        return response()->json(['status' => false, 'message' => 'Required tables are missing.'], 400);
+    }
+
+    $payments = DB::table($jlPaymentTable)
+        ->where('data_extraction_id', $extractionId)
+        ->where('closed', 'N')
+        ->get();
+
+    if ($payments->isEmpty()) {
+        return response()->json(['status' => false, 'message' => 'No gold loan data found.']);
+    }
+
+    $loanNos = $payments->pluck('loan_no')->toArray();
+    $memberKeys = $payments->map(fn($row) => $row->member_no . '__' . $row->class)->unique()->toArray();
+
+    // Get members
+    $members = DB::table($memberTable)
+        ->where('data_extraction_id', $extractionId)
+        ->whereIn(DB::raw("CONCAT(member_no, '__', class)"), $memberKeys)
+        ->get()
+        ->keyBy(fn($item) => $item->member_no . '__' . $item->class);
+    // Repayments grouped by loan_no
+    $repayments = DB::table($jlRepaymentTable)
+        ->where('data_extraction_id', $extractionId)
+        ->whereIn('loan_no', $loanNos)
+        ->select('loan_no', DB::raw('SUM(principal) as total_principal'), DB::raw('MAX(int_upto) as last_interest_paid'))
+        ->groupBy('loan_no')
+        ->get()
+        ->keyBy('loan_no');
+
+    // Jewel details grouped by loan_no
+    $jewelDetails = DB::table($jewelDetailTable)
+        ->where('data_extraction_id', $extractionId)
+        ->whereIn('loan_no', $loanNos)
+        ->select('loan_no', DB::raw('SUM(nos) as total_nos'))
+        ->groupBy('loan_no')
+        ->get()
+        ->keyBy('loan_no');
+
+    $csvHeader = [
+        'kyc number',
+        'gold loan number',
+        'scheme code',
+        'Loan amount',
+        'loan balance',
+        'balance interest',
+        'opened date',
+        'loan maturity date',
+        'int calc date',
+        'ornament count',
+        'total weight',
+        'name',
+    ];
+
+    $csvRows = [];
+    $csvRows[] = $csvHeader;
+
+    foreach ($payments as $payment) {
+        $loanNo = $payment->loan_no;
+        $memberKey = $payment->member_no . '__' . $payment->class;
+        $member = $members[$memberKey] ?? null;
+        if (!$member) continue;
+
+        $repayment = $repayments[$loanNo] ?? null;
+        $principalPaid = $repayment->total_principal ?? 0;
+        $lastInterestDate = $repayment->last_interest_paid ?? '';
+
+        $loanAmount = $payment->amount;
+        $balance = $loanAmount - $principalPaid;
+
+        if ($balance <= 0) continue;
+
+        $formattedLoanNo = $loanNo >= 0
+            ? str_pad($loanNo, 6, '0', STR_PAD_LEFT)
+            : str_pad($loanNo, 6, '9', STR_PAD_LEFT);
+        $billNo = $branchCode . $schemeCode . $formattedLoanNo;
+
+        $jewelCount = $jewelDetails[$loanNo]->total_nos ?? 0;
+
+        $csvRows[] = [
+            $member->mis_kyc_number,
+            $billNo,
+            $schemeCode,
+            number_format($loanAmount, 2, '.', ''),
+            number_format($balance, 2, '.', ''),
+            '', // balance interest blank
+            $payment->loan_date,
+            $payment->due_date,
+            $lastInterestDate,
+            $jewelCount,
+            number_format($payment->net_wt, 2, '.', ''),
+            $member->name,
+        ];
+    }
+
+    if (count($csvRows) === 1) {
+        return response()->json(['status' => false, 'message' => 'No gold loan data found for export.']);
+    }
+
+    $filename = 'gold_loan_summary_' . now()->format('Ymd_His') . '.csv';
+    $filepath = storage_path("app/public/$filename");
+
+    $handle = fopen($filepath, 'w');
+    foreach ($csvRows as $row) {
+        fputcsv($handle, $row);
+    }
+    fclose($handle);
+
+    return response()->json([
+            'status' => true,
+            'file_url' => asset("storage/" . $filename),
+            'file_name' => $filename,
+            'message' => 'Gold loan outstanding exported successfully',
+        ]);
+}
+public function downloadGoldLoanJewelDetailsCsv(Request $request)
+{
+    $request->validate([
+        'data_extraction_id' => 'required|integer',
+        'software'           => 'required|string',
+        'branch_code'        => 'required|string',
+        'scheme_code'        => 'required|string',
+    ]);
+
+    $extractionId = $request->input('data_extraction_id');
+    $software = strtolower($request->input('software'));
+    $branchCode = $request->input('branch_code');
+    $schemeCode = $request->input('scheme_code');
+
+    $prefix = $software . '_';
+
+    $jlPaymentTable   = $prefix . 'jl_payment';
+    $jewelDetailTable = $prefix . 'jewel_detail';
+
+    if (
+        !Schema::hasTable($jlPaymentTable) ||
+        !Schema::hasTable($jewelDetailTable)
+    ) {
+        return response()->json(['status' => false, 'message' => 'Required tables are missing.'], 400);
+    }
+
+    $payments = DB::table($jlPaymentTable)
+        ->where('data_extraction_id', $extractionId)
+        ->where('closed', 'N')
+        ->get();
+
+    if ($payments->isEmpty()) {
+        return response()->json(['status' => false, 'message' => 'No gold loan data found.']);
+    }
+
+    $loanNos = $payments->pluck('loan_no')->toArray();
+
+    $jewels = DB::table($jewelDetailTable)
+        ->where('data_extraction_id', $extractionId)
+        ->whereIn('loan_no', $loanNos)
+        ->get();
+
+    $paymentLookup = $payments->keyBy('loan_no');
+
+    $csvHeader = [
+        'gold loan number',
+        'ornament type',
+        'ornament quantity',
+        'ornament weight',
+    ];
+
+    $csvRows = [];
+    $csvRows[] = $csvHeader;
+
+    foreach ($jewels as $jewel) {
+        $loanNo = $jewel->loan_no;
+        $payment = $paymentLookup[$loanNo] ?? null;
+        if (!$payment) continue;
+
+        $formattedLoanNo = $loanNo >= 0
+            ? str_pad($loanNo, 6, '0', STR_PAD_LEFT)
+            : str_pad($loanNo, 6, '9', STR_PAD_LEFT);
+
+        $billNo = $branchCode . $schemeCode . $formattedLoanNo;
+
+        $csvRows[] = [
+            $billNo,
+            $jewel->jewel_name,
+            $jewel->nos,
+            number_format($jewel->net_wt, 2, '.', ''),
+        ];
+    }
+
+    if (count($csvRows) === 1) {
+        return response()->json(['status' => false, 'message' => 'No jewel detail data found for export.']);
+    }
+
+    $filename = 'gold_loan_jewel_details_' . now()->format('Ymd_His') . '.csv';
+    $filepath = storage_path("app/public/$filename");
+
+    $handle = fopen($filepath, 'w');
+    foreach ($csvRows as $row) {
+        fputcsv($handle, $row);
+    }
+    fclose($handle);
+
+ return response()->json([
+            'status' => true,
+            'file_url' => asset("storage/" . $filename),
+            'file_name' => $filename,
+            'message' => 'Gold loan outstanding exported successfully',
+        ]);
+}
+public function downloadGdLoanOutstandingCsv(Request $request)
+{
+    $request->validate([
+        'data_extraction_id' => 'required|integer',
+        'software'           => 'required|string',
+        'branch_code'        => 'required|string',
+        'scheme_code'        => 'required|string',
+    ]);
+
+    $extractionId = $request->input('data_extraction_id');
+    $software     = strtolower($request->input('software'));
+    $branchCode   = $request->input('branch_code');
+    $schemeCode   = $request->input('scheme_code');
+
+    $prefix = $software . '_';
+
+    $groupAcMasterTable = $prefix . 'group_deposit_ac_master';
+    $gdLoanSecurityTable = $prefix . 'gd_loan_security';
+    $gdLoanPaymentTable = $prefix . 'gd_loan_payment';
+    $gdLoanRepayTable = $prefix . 'gd_loan_repay';
+
+    if (
+        !Schema::hasTable($groupAcMasterTable) ||
+        !Schema::hasTable($gdLoanSecurityTable) ||
+        !Schema::hasTable($gdLoanPaymentTable) ||
+        !Schema::hasTable($gdLoanRepayTable)
+    ) {
+        return response()->json([
+            'status' => false,
+            'message' => 'Required tables are missing.',
+        ], 400);
+    }
+
+    // Get all loan security entries
+    $loanEntries = DB::table($gdLoanSecurityTable)
+        ->where('data_extraction_id', $extractionId)
+        ->get();
+
+    if ($loanEntries->isEmpty()) {
+        return response()->json([
+            'status' => false,
+            'message' => 'No GD loan entries found.',
+        ]);
+    }
+
+    // Generate composite keys (dep_group_code__dep_ac_no)
+    $groupKeys = $loanEntries->map(function ($item) {
+        return $item->dep_group_code . '__' . $item->dep_ac_no;
+    })->toArray();
+
+    // Get group account info
+    $groupAccounts = DB::table($groupAcMasterTable)
+        ->where('data_extraction_id', $extractionId)
+        ->whereIn(DB::raw("CONCAT(group_code, '__', ac_no)"), $groupKeys)
+        ->get()
+        ->keyBy(function ($item) {
+            return $item->group_code . '__' . $item->ac_no;
+        });
+
+    // Get loan numbers
+    $loanNos = $loanEntries->pluck('loan_no')->toArray();
+
+    // Get payment details
+    $loanPayments = DB::table($gdLoanPaymentTable)
+        ->where('data_extraction_id', $extractionId)
+        ->where('closed', 'N')
+        ->whereIn('loan_no', $loanNos)
+        ->get()
+        ->keyBy('loan_no');
+
+    // Get repayments grouped
+    $repayments = DB::table($gdLoanRepayTable)
+        ->where('data_extraction_id', $extractionId)
+        ->whereIn('loan_no', $loanNos)
+        ->select('loan_no', DB::raw('SUM(principal) as total_principal'), DB::raw('MAX(int_upto) as last_interest_paid'))
+        ->groupBy('loan_no')
+        ->get()
+        ->keyBy('loan_no');
+
+    $csvHeader = [
+        'scheme code',
+        'branch',
+        'kyc number',
+        'loan number',
+        'opened date',
+        'loan amount',
+        'loan balance',
+        'due date',
+        'interest rate',
+        'name',
+        'last interest paid date',
+        'total installments',
+    ];
+
+    $csvRows = [];
+    $csvRows[] = $csvHeader;
+
+    foreach ($loanEntries as $loan) {
+        $groupKey = $loan->dep_group_code . '__' . $loan->dep_ac_no;
+        $group = $groupAccounts[$groupKey] ?? null;
+        $payment = $loanPayments[$loan->loan_no] ?? null;
+
+        if (!$group || !$payment) {
+            continue;
+        }
+
+        $repay = $repayments[$loan->loan_no] ?? null;
+
+        $totalPrincipalPaid = $repay->total_principal ?? 0;
+        $lastInterestPaid = $repay->last_interest_paid ?? '';
+
+        $balance = $loan->loan_amount - $totalPrincipalPaid;
+
+        if ($balance <= 0) {
+            continue; // Skip fully repaid loans
+        }
+
+        // Generate bill number
+        $loanNoFormatted = $loan->loan_no >= 0
+            ? str_pad($loan->loan_no, 6, '0', STR_PAD_LEFT)
+            : str_pad($loan->loan_no, 6, '9', STR_PAD_LEFT);
+
+        $billNo = $branchCode . $schemeCode . $loanNoFormatted;
+
+        $csvRows[] = [
+            $schemeCode,
+            $branchCode,
+            $group->mis_kyc_number,
+            $billNo,
+            $loan->loan_date,
+            number_format($loan->loan_amount, 2, '.', ''),
+            number_format($balance, 2, '.', ''),
+            $payment->due_date,
+            $payment->int_rate,
+            $group->name,
+            $lastInterestPaid,
+            '', // total_installments
+        ];
+    }
+
+    if (count($csvRows) === 1) {
+        return response()->json([
+            'status' => false,
+            'message' => 'No GD loan outstanding data found for export.',
+        ]);
+    }
+
+    $filename = 'gd_loan_outstanding_' . now()->format('Ymd_His') . '.csv';
+    $filepath = storage_path("app/public/$filename");
+
+    $handle = fopen($filepath, 'w');
+    foreach ($csvRows as $row) {
+        fputcsv($handle, $row);
+    }
+    fclose($handle);
+
+    return response()->json([
+            'status' => true,
+            'file_url' => asset("storage/" . $filename),
+            'file_name' => $filename,
+            'message' => 'Gold loan outstanding exported successfully',
         ]);
 }
 
